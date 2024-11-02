@@ -1,0 +1,1 @@
+# Shipping details model 
