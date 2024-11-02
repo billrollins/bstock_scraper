@@ -78,7 +78,7 @@ alembic upgrade head
 ## TODOs
 
 ### High Priority
-- [ ] Implement authentication in `src/core/auth.py`
+- [X] Implement authentication in `src/core/auth.py`
 - [ ] Complete Amazon parser implementation in `src/parsers/amazon_parser.py`
 - [ ] Implement Target parser in `src/parsers/target_parser.py`
 - [ ] Add error handling and retry logic in `src/core/scraper.py`

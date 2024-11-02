@@ -86,15 +86,122 @@ datefmt = %H:%M:%S
 ==================================================
 File Path: E:/bstock_scraper/README.md
 ==================================================
-# Project documentation
+# B-Stock Scraper
+A Python-based web scraper for collecting auction data from B-Stock marketplaces (Amazon and Target). The scraper monitors auctions, tracks pricing, and stores historical data for analysis.
+## Project Structure
+```
+bstock_scraper/
+├── alembic/              # Database migrations
+├── config/
+│   ├── settings.py       # Application configuration
+│   └── marketplaces/     # Marketplace-specific settings
+├── notebooks/            # Jupyter notebooks for data analysis
+├── scripts/
+│   ├── export_data.py    # Data export utilities
+│   └── run_scraper.py    # Main execution script
+├── src/
+│   ├── core/             # Core functionality
+│   │   ├── auth.py       # Authentication handling
+│   │   ├── rate_limiter.py  # Request rate limiting
+│   │   └── scraper.py    # Main scraping logic
+│   ├── models/           # Data models
+│   │   ├── auction.py    # Auction data structure
+│   │   └── marketplace.py # Marketplace configuration
+│   ├── parsers/          # HTML parsing
+│   │   ├── amazon_parser.py
+│   │   ├── base_parser.py
+│   │   └── target_parser.py
+│   ├── storage/          # Data persistence
+│   │   ├── database.py   # Database operations
+│   │   └── exporters.py  # Export functionality
+│   └── utils/            # Utility functions
+│       ├── http.py       # HTTP helpers
+│       └── logging.py    # Logging configuration
+└── tests/                # Test suite
+```
+## Features
+- Scrapes auction data from multiple B-Stock marketplaces:
+- Amazon Returns
+- Target Liquidation
+- Implements rate limiting to respect website policies
+- Stores data in PostgreSQL database
+- Tracks key auction metrics:
+- Current bid
+- Total units
+- Retail value
+- Location
+- Shipping costs
+- Cost per unit
+- Auction end time
+## Setup
+1. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # Unix
+.\venv\Scripts\activate   # Windows
+```
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+3. Copy `.env.example` to `.env` and update with your credentials:
+```bash
+cp .env.example .env
+```
+4. Initialize the database:
+```bash
+alembic upgrade head
+```
+## TODOs
+### High Priority
+- [ ] Implement authentication in `src/core/auth.py`
+- [ ] Complete Amazon parser implementation in `src/parsers/amazon_parser.py`
+- [ ] Implement Target parser in `src/parsers/target_parser.py`
+- [ ] Add error handling and retry logic in `src/core/scraper.py`
+- [ ] Implement main scraping loop in `scripts/run_scraper.py`
+### Medium Priority
+- [ ] Add database models for historical price tracking
+- [ ] Implement shipping cost calculator
+- [ ] Add logging throughout the application
+- [ ] Create data export functionality in `scripts/export_data.py`
+- [ ] Add unit tests for parsers and data models
+### Low Priority
+- [ ] Add documentation for all modules
+- [ ] Create dashboard for visualizing auction data
+- [ ] Implement email notifications for interesting auctions
+- [ ] Add support for additional B-Stock marketplaces
+- [ ] Create Dockerfile for containerization
+### Infrastructure
+- [ ] Set up CI/CD pipeline
+- [ ] Add monitoring and alerting
+- [ ] Implement backup strategy for database
+- [ ] Add rate limiting configuration per marketplace
+- [ ] Create deployment documentation
+## Contributing
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+## License
+This project is private and confidential.
+## Notes
+- Remember to respect B-Stock's terms of service and rate limiting
+- Keep credentials secure and never commit them to the repository
+- Regular backups of the database are recommended
 
 ==================================================
 File Path: E:/bstock_scraper/requirements.txt
 ==================================================
+aiohappyeyeballs==2.4.3
+aiohttp==3.10.10
+aiosignal==1.3.1
 alembic==1.13.3
 annotated-types==0.7.0
 asttokens==2.4.1
+attrs==24.2.0
 beautifulsoup4==4.12.3
+bs4==0.0.2
 certifi==2024.8.30
 chardet==5.2.0
 charset-normalizer==3.4.0
@@ -103,8 +210,10 @@ comm==0.2.2
 debugpy==1.8.7
 decorator==5.1.1
 executing==2.1.0
+frozenlist==1.5.0
 greenlet==3.1.1
 idna==3.10
+iniconfig==2.0.0
 ipykernel==6.29.5
 ipython==8.29.0
 jedi==0.19.1
@@ -113,19 +222,24 @@ jupyter_core==5.7.2
 Mako==1.3.6
 MarkupSafe==3.0.2
 matplotlib-inline==0.1.7
+multidict==6.1.0
 nest-asyncio==1.6.0
 numpy==2.1.3
 packaging==24.1
 pandas==2.2.3
 parso==0.8.4
 platformdirs==4.3.6
+pluggy==1.5.0
 prompt_toolkit==3.0.48
+propcache==0.2.0
 psutil==6.1.0
 psycopg2-binary==2.9.10
 pure_eval==0.2.3
 pydantic==2.9.2
 pydantic_core==2.23.4
 Pygments==2.18.0
+pytest==8.3.3
+pytest-asyncio==0.24.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2024.2
@@ -142,6 +256,7 @@ typing_extensions==4.12.2
 tzdata==2024.2
 urllib3==2.2.3
 wcwidth==0.2.13
+yarl==1.17.1
 
 
 ==================================================
@@ -560,7 +675,128 @@ File Path: E:/bstock_scraper/src/core/__init__.py
 ==================================================
 File Path: E:/bstock_scraper/src/core/auth.py
 ==================================================
-# Authentication handling
+import logging
+import aiohttp
+from typing import Optional
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from ..utils.http import get_user_agent
+logger = logging.getLogger(__name__)
+class AuthenticationError(Exception):
+"""Raised when authentication fails"""
+pass
+class BStockAuthenticator:
+"""Handles authentication with B-Stock marketplaces"""
+def __init__(self, email: str, password: str, marketplace: str = "amazon"):
+"""
+Initialize authenticator with credentials
+Args:
+email: B-Stock account email
+password: B-Stock account password
+marketplace: Which marketplace to authenticate with ("amazon" or "target")
+"""
+self.email = email
+self.password = password
+self.marketplace = marketplace.lower()
+self.session: Optional[aiohttp.ClientSession] = None
+self.last_auth: Optional[datetime] = None
+self.auth_token: Optional[str] = None
+# Define marketplace-specific URLs
+self.base_urls = {
+"amazon": "https://bstock.com/amazon",
+"target": "https://bstock.com/target"
+}
+if self.marketplace not in self.base_urls:
+raise ValueError(f"Unsupported marketplace: {marketplace}")
+self.base_url = self.base_urls[marketplace]
+async def __aenter__(self):
+"""Async context manager entry"""
+await self.login()
+return self
+async def __aexit__(self, exc_type, exc_val, exc_tb):
+"""Async context manager exit"""
+await self.close()
+async def create_session(self) -> None:
+"""Create a new aiohttp session with appropriate headers"""
+if self.session:
+await self.session.close()
+headers = {
+"User-Agent": get_user_agent(),
+"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+"Accept-Language": "en-US,en;q=0.5",
+"Accept-Encoding": "gzip, deflate, br",
+"DNT": "1",
+"Connection": "keep-alive",
+"Upgrade-Insecure-Requests": "1"
+}
+self.session = aiohttp.ClientSession(headers=headers)
+async def close(self) -> None:
+"""Close the session"""
+if self.session:
+await self.session.close()
+self.session = None
+def is_authenticated(self) -> bool:
+"""Check if current session is authenticated and not expired"""
+if not self.last_auth or not self.session:
+return False
+# Check if authentication is older than 1 hour
+auth_age = datetime.now() - self.last_auth
+return auth_age < timedelta(hours=1)
+async def login(self) -> None:
+"""Authenticate with B-Stock and establish a session"""
+if not self.session:
+await self.create_session()
+# Check if we have a valid session
+if self.is_authenticated():
+return
+try:
+# First get the login page to obtain CSRF token
+response = await self.session.get(f"{self.base_url}/customer/account/login/")
+await response.raise_for_status()
+html = await response.text()
+soup = BeautifulSoup(html, 'html.parser')
+form_key = soup.select_one('input[name="form_key"]')
+if not form_key:
+raise AuthenticationError("Could not find form key in login page")
+form_key = form_key['value']
+# Prepare login data
+login_data = {
+'form_key': form_key,
+'login[username]': self.email,
+'login[password]': self.password,
+'send': ''
+}
+# Perform login
+login_url = f"{self.base_url}/customer/account/loginPost/"
+response = await self.session.post(login_url, data=login_data, allow_redirects=True)
+await response.raise_for_status()
+# Check if login was successful
+if "customer/account/login" in str(response.url):
+raise AuthenticationError("Login failed - Invalid credentials")
+# Store authentication time
+self.last_auth = datetime.now()
+# Extract authentication token from cookies if available
+self.auth_token = response.cookies.get('frontend')  # Adjust cookie name if needed
+except aiohttp.ClientError as e:
+raise AuthenticationError(f"Login failed - Network error: {str(e)}")
+except Exception as e:
+raise AuthenticationError(f"Login failed - Unexpected error: {str(e)}")
+async def make_authenticated_request(self, url: str, method: str = "GET", **kwargs) -> aiohttp.ClientResponse:
+"""Make an authenticated request to B-Stock"""
+if not self.is_authenticated():
+await self.login()
+try:
+response = await self.session.request(method, url, **kwargs)
+await response.raise_for_status()
+return response
+except aiohttp.ClientError as e:
+if response.status == 401:
+# Try to re-authenticate once
+await self.login()
+response = await self.session.request(method, url, **kwargs)
+await response.raise_for_status()
+return response
+raise AuthenticationError(f"Request failed: {str(e)}")
 
 ==================================================
 File Path: E:/bstock_scraper/src/core/rate_limiter.py
@@ -822,6 +1058,128 @@ File Path: E:/bstock_scraper/src/utils/__init__.py
 File Path: E:/bstock_scraper/src/utils/http.py
 ==================================================
 # HTTP utilities
+import random
+from typing import List, Optional
+from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
+def get_user_agent() -> str:
+"""
+Returns a randomly selected user agent string from a list of common browsers.
+This helps prevent blocking by making requests appear more like regular browser traffic.
+"""
+user_agents = [
+# Chrome on Windows 10
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+# Firefox on Windows 10
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+# Edge on Windows 10
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+# Safari on macOS
+"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+# Chrome on macOS
+"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
+return random.choice(user_agents)
+class RequestError(Exception):
+"""Base exception for HTTP request errors"""
+pass
+class HTTPClient:
+"""
+HTTP client utility class with built-in retry logic and error handling
+"""
+def __init__(self, max_retries: int = 3, timeout: int = 30):
+self.max_retries = max_retries
+self.timeout = timeout
+self._session = None
+self._last_request_time: Optional[datetime] = None
+def get_headers(self, additional_headers: Optional[dict] = None) -> dict:
+"""
+Get default headers with optional additional headers
+Args:
+additional_headers: Optional dictionary of additional headers to include
+Returns:
+Dictionary of HTTP headers
+"""
+headers = {
+"User-Agent": get_user_agent(),
+"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+"Accept-Language": "en-US,en;q=0.5",
+"Accept-Encoding": "gzip, deflate, br",
+"DNT": "1",
+"Connection": "keep-alive",
+"Upgrade-Insecure-Requests": "1",
+"Sec-Fetch-Dest": "document",
+"Sec-Fetch-Mode": "navigate",
+"Sec-Fetch-Site": "none",
+"Sec-Fetch-User": "?1",
+"Cache-Control": "max-age=0"
+}
+if additional_headers:
+headers.update(additional_headers)
+return headers
+@staticmethod
+def parse_cookies(cookie_string: str) -> dict:
+"""
+Parse cookie string into dictionary
+Args:
+cookie_string: String containing cookies
+Returns:
+Dictionary of cookie name-value pairs
+"""
+cookies = {}
+if not cookie_string:
+return cookies
+for cookie in cookie_string.split(';'):
+if '=' in cookie:
+name, value = cookie.split('=', 1)
+cookies[name.strip()] = value.strip()
+return cookies
+@staticmethod
+def build_url(base_url: str, path: str = "", params: Optional[dict] = None) -> str:
+"""
+Build complete URL from components
+Args:
+base_url: Base URL
+path: Optional path to append
+params: Optional query parameters
+Returns:
+Complete URL string
+"""
+url = base_url.rstrip('/')
+if path:
+url += '/' + path.lstrip('/')
+if params:
+param_strings = []
+for key, value in params.items():
+if isinstance(value, (list, tuple)):
+for v in value:
+param_strings.append(f"{key}={v}")
+else:
+param_strings.append(f"{key}={value}")
+if param_strings:
+url += '?' + '&'.join(param_strings)
+return url
+@staticmethod
+def is_success_status(status_code: int) -> bool:
+"""Check if HTTP status code indicates success"""
+return 200 <= status_code < 300
+@staticmethod
+def should_retry(status_code: int) -> bool:
+"""
+Determine if request should be retried based on status code
+Args:
+status_code: HTTP status code
+Returns:
+Boolean indicating if retry is appropriate
+"""
+# Retry on server errors (5xx) and specific client errors
+return (
+status_code >= 500 or  # Server errors
+status_code == 429 or  # Too Many Requests
+status_code == 408 or  # Request Timeout
+status_code == 404     # Not Found (temporary)
+)
 
 ==================================================
 File Path: E:/bstock_scraper/src/utils/logging.py
@@ -859,3 +1217,135 @@ File Path: E:/bstock_scraper/src/__init__.py
 File Path: E:/bstock_scraper/tests/__init__.py
 ==================================================
 
+
+==================================================
+File Path: E:/bstock_scraper/tests/test_auth.py
+==================================================
+import pytest
+from unittest.mock import Mock, patch, AsyncMock
+from datetime import datetime, timedelta
+from aiohttp import ClientResponse, ClientSession
+from bs4 import BeautifulSoup
+from src.core.auth import BStockAuthenticator, AuthenticationError
+# Test data
+TEST_EMAIL = "test@example.com"
+TEST_PASSWORD = "password123"
+TEST_FORM_KEY = "testformkey123"
+class MockResponse:
+def __init__(self, status=200, url="", text="", cookies=None):
+self.status = status
+self.url = url
+self._text = text
+self.cookies = cookies or {}
+async def raise_for_status(self):
+if self.status >= 400:
+raise Exception(f"HTTP Error {self.status}")
+async def text(self):
+return self._text
+@pytest.fixture
+def mock_response():
+"""Create a mock response with login form"""
+html = f'<html><input name="form_key" value="{TEST_FORM_KEY}"></html>'
+return MockResponse(text=html)
+@pytest.fixture
+def mock_login_response():
+"""Create a mock successful login response"""
+return MockResponse(
+url="https://bstock.com/amazon/customer/account/",
+cookies={"frontend": "test_token"}
+)
+@pytest.fixture
+def mock_session():
+"""Create a mock session"""
+mock = AsyncMock(spec=ClientSession)
+async def mock_get(*args, **kwargs):
+return mock_response()
+async def mock_post(*args, **kwargs):
+return mock_login_response()
+mock.get = AsyncMock(side_effect=mock_get)
+mock.post = AsyncMock(side_effect=mock_post)
+mock.request = AsyncMock(side_effect=mock_get)
+mock.close = AsyncMock()
+return mock
+@pytest.fixture
+async def authenticator(mock_session):
+"""Create an authenticator instance with mocked session"""
+with patch('aiohttp.ClientSession', return_value=mock_session):
+auth = BStockAuthenticator(TEST_EMAIL, TEST_PASSWORD)
+yield auth
+await auth.close()
+@pytest.mark.asyncio
+async def test_init():
+"""Test authenticator initialization"""
+auth = BStockAuthenticator(TEST_EMAIL, TEST_PASSWORD)
+assert auth.email == TEST_EMAIL
+assert auth.password == TEST_PASSWORD
+assert auth.marketplace == "amazon"
+assert auth.session is None
+assert auth.last_auth is None
+@pytest.mark.asyncio
+async def test_init_invalid_marketplace():
+"""Test initialization with invalid marketplace"""
+with pytest.raises(ValueError):
+BStockAuthenticator(TEST_EMAIL, TEST_PASSWORD, marketplace="invalid")
+@pytest.mark.asyncio
+async def test_create_session(authenticator):
+"""Test session creation"""
+await authenticator.create_session()
+assert authenticator.session is not None
+assert isinstance(authenticator.session, AsyncMock)
+@pytest.mark.asyncio
+async def test_login_success(authenticator, mock_session, mock_response, mock_login_response):
+"""Test successful login"""
+mock_session.get.return_value = mock_response
+mock_session.post.return_value = mock_login_response
+await authenticator.login()
+# Verify login request was made
+assert mock_session.post.called
+call_args = mock_session.post.call_args
+assert "loginPost" in call_args[0][0]
+# Verify authentication state
+assert authenticator.is_authenticated()
+assert authenticator.auth_token == "test_token"
+@pytest.mark.asyncio
+async def test_login_failure(authenticator, mock_session):
+"""Test failed login"""
+# Mock a failed login response
+failed_response = MockResponse(
+url="https://bstock.com/amazon/customer/account/login/",
+text=f'<html><input name="form_key" value="{TEST_FORM_KEY}"></html>'
+)
+mock_session.post.return_value = failed_response
+with pytest.raises(AuthenticationError):
+await authenticator.login()
+@pytest.mark.asyncio
+async def test_is_authenticated(authenticator):
+"""Test authentication status checking"""
+assert not authenticator.is_authenticated()
+# Set up authenticated state
+authenticator.last_auth = datetime.now()
+authenticator.session = mock_session()
+assert authenticator.is_authenticated()
+# Test expired authentication
+authenticator.last_auth = datetime.now() - timedelta(hours=2)
+assert not authenticator.is_authenticated()
+@pytest.mark.asyncio
+async def test_make_authenticated_request(authenticator, mock_session, mock_response):
+"""Test making an authenticated request"""
+mock_session.request.return_value = mock_response
+test_url = "https://bstock.com/amazon/test"
+response = await authenticator.make_authenticated_request(test_url)
+assert mock_session.request.called
+call_args = mock_session.request.call_args
+assert call_args[0][0] == "GET"
+assert call_args[0][1] == test_url
+@pytest.mark.asyncio
+async def test_context_manager(mock_session, mock_response, mock_login_response):
+"""Test async context manager functionality"""
+mock_session.get.return_value = mock_response
+mock_session.post.return_value = mock_login_response
+with patch('aiohttp.ClientSession', return_value=mock_session):
+async with BStockAuthenticator(TEST_EMAIL, TEST_PASSWORD) as auth:
+assert auth.session is not None
+assert isinstance(auth.session, AsyncMock)
+assert auth.is_authenticated()
